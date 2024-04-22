@@ -1,0 +1,201 @@
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <SFE_BMP180.h>
+#include <ESP8266WiFi.h>
+#define DEVICE "ESP8266"
+#define WIFI_AUTH_OPEN ENC_TYPE_NONE
+#include <InfluxDbClient.h>
+#include <InfluxDbCloud.h>
+SFE_BMP180 pressure;
+#define ALTITUDE 900.0 // Altitude of pakistan
+ 
+// WiFi AP SSID
+#define WIFI_SSID "AndroidAP3DEC"
+// WiFi password
+#define WIFI_PASSWORD "electroniclinic"
+// InfluxDB v2 server url, e.g. https://eu-central-1-1.aws.cloud2.influxdata.com (Use: InfluxDB UI -> Load Data -> Client Libraries)
+#define INFLUXDB_URL "https://europe-west1-1.gcp.cloud2.influxdata.com"
+// InfluxDB v2 server or cloud API authentication token (Use: InfluxDB UI -> Load Data -> Tokens -> <select token>)
+#define INFLUXDB_TOKEN "olV7e5I7YCJwI0beJyhONq-VNg-aypG4sjQ98YVPfmO_q5QSfkJd7y3tDhn1n3EOA_fMVuz3M8ni9bjhllnFhw=="
+// InfluxDB v2 organization id (Use: InfluxDB UI -> Settings -> Profile -> <name under tile> )
+#define INFLUXDB_ORG "electroniclinic117@gmail.com"
+// InfluxDB v2 bucket name (Use: InfluxDB UI -> Load Data -> Buckets)
+#define INFLUXDB_BUCKET "sensormonitoring"
+#define TZ_INFO "WET0WEST,M3.5.0/1,M10.5.0" /// this is the time zone
+ 
+// InfluxDB client instance with preconfigured InfluxCloud certificate
+InfluxDBClient client(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN, InfluxDbCloud2CACert);
+// InfluxDB client instance without preconfigured InfluxCloud certificate for insecure connection 
+//InfluxDBClient client(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN);
+ 
+// Data point
+Point sensorReadings("measurements");
+ 
+int mq3sensor=A0;
+int sensorvalue;
+void setup() {
+  Serial.begin(115200);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("connecting");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println();
+  Serial.print("connected: ");
+  if (pressure.begin())
+    Serial.println("BMP180 init success");
+  else
+  {
+    // Oops, something went wrong, this is usually a connection problem,
+    // see the comments at the top of this sketch for the proper connections.
+ 
+    Serial.println("BMP180 init fail\n\n");
+    while(1); // Pause forever.
+  }
+  Serial.println();
+    pinMode(mq3sensor, INPUT);//MQ3 sensor
+ 
+ 
+  
+  // Add tags
+  sensorReadings.addTag("device", DEVICE);
+  sensorReadings.addTag("location", "office");
+  sensorReadings.addTag("sensor", "bmp180");
+ 
+  // Accurate time is necessary for certificate validation and writing in batches
+  // For the fastest time sync find NTP servers in your area: https://www.pool.ntp.org/zone/
+  // Syncing progress and the time will be printed to Serial.
+  timeSync(TZ_INFO, "pool.ntp.org", "time.nis.gov");
+ 
+  // Check server connection
+  if (client.validateConnection()) {
+    Serial.print("Connected to InfluxDB: ");
+    Serial.println(client.getServerUrl());
+  } else {
+    Serial.print("InfluxDB connection failed: ");
+    Serial.println(client.getLastErrorMessage());
+  }
+}
+ 
+void loop() {
+  // Get latest sensor readings
+ 
+  char status;
+  double T,P,p0,a;
+ 
+  // Loop here getting pressure readings every 10 seconds.
+ 
+  // If you want sea-level-compensated pressure, as used in weather reports,
+  // you will need to know the altitude at which your measurements are taken.
+  // We're using a constant called ALTITUDE in this sketch:
+   sensorvalue=analogRead(mq3sensor); /// read the MQ3 sensor
+   Serial.println(sensorvalue);
+ 
+  
+  // If you want to measure altitude, and not pressure, you will instead need
+  // to provide a known baseline pressure. This is shown at the end of the sketch.
+ 
+  // You must first get a temperature measurement to perform a pressure reading.
+  
+  // Start a temperature measurement:
+  // If request is successful, the number of ms to wait is returned.
+  // If request is unsuccessful, 0 is returned.
+ 
+  status = pressure.startTemperature();
+  if (status != 0)
+  {
+    // Wait for the measurement to complete:
+    delay(status);
+ 
+    // Retrieve the completed temperature measurement:
+    // Note that the measurement is stored in the variable T.
+    // Function returns 1 if successful, 0 if failure.
+ 
+    status = pressure.getTemperature(T);
+    if (status != 0)
+    {
+      // Print out the measurement:
+      Serial.print("temperature: ");
+      Serial.print(T,2);
+      Serial.print(" deg C, ");
+      Serial.print((9.0/5.0)*T+32.0,2);
+      Serial.println(" deg F");
+      
+      // Start a pressure measurement:
+      // The parameter is the oversampling setting, from 0 to 3 (highest res, longest wait).
+      // If request is successful, the number of ms to wait is returned.
+      // If request is unsuccessful, 0 is returned.
+ 
+      status = pressure.startPressure(3);
+      if (status != 0)
+      {
+        // Wait for the measurement to complete:
+        delay(status);
+ 
+        status = pressure.getPressure(P,T);
+        if (status != 0)
+        {
+          // Print out the measurement:
+          Serial.print("absolute pressure: ");
+          Serial.print(P,2);
+          Serial.print(" mb, ");
+          Serial.print(P*0.0295333727,2);
+          Serial.println(" inHg");
+ 
+          // The pressure sensor returns abolute pressure, which varies with altitude.
+          // To remove the effects of altitude, use the sealevel function and your current altitude.
+    
+ 
+          p0 = pressure.sealevel(P,ALTITUDE); // we're at 1655 meters (Boulder, CO)
+          Serial.print("relative (sea-level) pressure: ");
+          Serial.print(p0,2);
+          Serial.print(" mb, ");
+          Serial.print(p0*0.0295333727,2);
+          Serial.println(" inHg");
+ 
+          // On the other hand, if you want to determine your altitude from the pressure reading,
+          // use the altitude function along with a baseline pressure (sea-level or other).
+          // Parameters: P = absolute pressure in mb, p0 = baseline pressure in mb.
+          // Result: a = altitude in m.
+ 
+          a = pressure.altitude(P,p0);
+          Serial.print("computed altitude: ");
+          Serial.print(a,0);
+          Serial.print(" meters, ");
+          Serial.print(a*3.28084,0);
+          Serial.println(" feet");
+        }
+        else Serial.println("error retrieving pressure measurement\n");
+      }
+      else Serial.println("error starting pressure measurement\n");
+    }
+    else Serial.println("error retrieving temperature measurement\n");
+  }
+ else Serial.println("error starting temperature measurement\n");
+ 
+  sensorvalue=analogRead(mq3sensor);
+  // Add readings as fields to point
+  sensorReadings.addField("Temperature", T);
+  sensorReadings.addField("Altitude", a);
+  sensorReadings.addField("Pressure",  p0);
+ sensorReadings.addField("MQ3 Sensor",  sensorvalue);
+ 
+ 
+  // Print what are we exactly writing
+  Serial.print("Writing: ");
+  Serial.println(client.pointToLineProtocol(sensorReadings));
+  
+  // Write point into buffer
+  client.writePoint(sensorReadings);
+ 
+  // Clear fields for next usage. Tags remain the same.
+  sensorReadings.clearFields();
+ 
+ 
+ 
+  // Wait 10s
+  Serial.println("Wait 10s");
+  delay(10000);
+}
