@@ -1,0 +1,180 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <SFE_BMP180.h>
+#include <ESP8266WiFi.h>
+#define DEVICE "ESP8266"
+#define WIFI_AUTH_OPEN ENC_TYPE_NONE
+#include <InfluxDbClient.h>
+#include <InfluxDbCloud.h>
+SFE_BMP180 pressure;
+#define ALTITUDE 900.0 // Altitude of pakistan
+ 
+// WiFi AP SSID
+#define WIFI_SSID "Columbia University"
+// WiFi password
+#define WIFI_PASSWORD "electroniclinic"
+// InfluxDB v2 server url, e.g. https://eu-central-1-1.aws.cloud2.influxdata.com (Use: InfluxDB UI -> Load Data -> Client Libraries)
+#define INFLUXDB_URL "https://us-east-1-1.aws.cloud2.influxdata.com"
+// InfluxDB v2 server or cloud API authentication token (Use: InfluxDB UI -> Load Data -> Tokens -> <select token>)
+#define INFLUXDB_TOKEN "in3WxVsnRqbu9QGUB8aLtTk8hqWcIu8nws1X6syWFd-xc0g5mPbeJnAPi8LdrTbsE717oflJEqZj_OSn2nn-dQ=="
+// InfluxDB v2 organization id (Use: InfluxDB UI -> Settings -> Profile -> <name under tile> )
+#define INFLUXDB_ORG "998acdc07816999c"
+// InfluxDB v2 bucket name (Use: InfluxDB UI -> Load Data -> Buckets)
+#define INFLUXDB_BUCKET "FungalFentonScaleup"
+#define TZ_INFO "WET0WEST,M3.5.0/1,M10.5.0" /// this is the time zone
+ 
+// InfluxDB client instance with preconfigured InfluxCloud certificate
+InfluxDBClient client(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN, InfluxDbCloud2CACert);
+// InfluxDB client instance without preconfigured InfluxCloud certificate for insecure connection 
+//InfluxDBClient client(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKEN);
+ 
+// Data point
+Point sensorReadings("measurements");
+ 
+int mq3sensor=A0;
+int sensorvalue;
+void setup() {
+  Serial.begin(115200);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("connecting");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println();
+  Serial.print("connected: ");
+  if (pressure.begin())
+    Serial.println("pH int success");
+  else
+  {
+    // Oops, something went wrong, this is usually a connection problem,
+    // see the comments at the top of this sketch for the proper connections.
+ 
+    Serial.println("pH int fail");
+    while(1); // Pause forever.
+  }
+  Serial.println();
+    pinMode(pHsensor, INPUT);//pH sense
+ 
+ 
+  
+  // Add tags
+  sensorReadings.addTag("device", DEVICE);
+  sensorReadings.addTag("location", "office");
+  sensorReadings.addTag("sensor", "pH");
+ 
+  // Accurate time is necessary for certificate validation and writing in batches
+  // For the fastest time sync find NTP servers in your area: https://www.pool.ntp.org/zone/
+  // Syncing progress and the time will be printed to Serial.
+  timeSync(TZ_INFO, "pool.ntp.org", "time.nis.gov");
+ 
+  // Check server connection
+  if (client.validateConnection()) {
+    Serial.print("Connected to InfluxDB: ");
+    Serial.println(client.getServerUrl());
+  } else {
+    Serial.print("InfluxDB connection failed: ");
+    Serial.println(client.getLastErrorMessage());
+  }
+}
+ 
+void loop() {
+  // Get latest sensor readings
+ 
+  char status;
+  double T,P;
+ 
+  // Loop here getting pressure readings every 10 seconds.
+ 
+  // If you want sea-level-compensated pressure, as used in weather reports,
+  // you will need to know the altitude at which your measurements are taken.
+  // We're using a constant called ALTITUDE in this sketch:
+   sensorvalue=analogRead(pHsensor); /// read the MQ3 sensor
+   Serial.println(sensorvalue);
+ 
+  
+  // If you want to measure altitude, and not pressure, you will instead need
+  // to provide a known baseline pressure. This is shown at the end of the sketch.
+ 
+  // You must first get a temperature measurement to perform a pressure reading.
+  
+  // Start a temperature measurement:
+  // If request is successful, the number of ms to wait is returned.
+  // If request is unsuccessful, 0 is returned.
+ 
+  status = pressure.startTemperature();
+  if (status != 0)
+  {
+    // Wait for the measurement to complete:
+    delay(status);
+ 
+    // Retrieve the completed temperature measurement:
+    // Note that the measurement is stored in the variable T.
+    // Function returns 1 if successful, 0 if failure.
+ 
+    status = pressure.getDO(T);
+    if (status != 0)
+    {
+      // Print out the measurement:
+      Serial.print("DO: ");
+      Serial.print(T,2);
+      Serial.print(" mg/L, ");
+      Serial.print((9.0/5.0)*T+32.0,2);
+      Serial.println(" ignore this one");
+      
+      // Start a pressure measurement:
+      // The parameter is the oversampling setting, from 0 to 3 (highest res, longest wait).
+      // If request is successful, the number of ms to wait is returned.
+      // If request is unsuccessful, 0 is returned.
+ 
+      status = pressure.startpH(5);
+      if (status != 0)
+      {
+        // Wait for the measurement to complete:
+        delay(status);
+ 
+        status = pressure.getpH(P,T);
+        if (status != 0)
+        {
+          // Print out the measurement:
+          Serial.print("pH: ");
+          Serial.print(P,2);
+          Serial.print(" mg/L, ");
+          Serial.print(P*0.0295333727,2);
+          Serial.println(" ignore this one");
+ 
+          // The pressure sensor returns abolute pressure, which varies with altitude.
+          // To remove the effects of altitude, use the sealevel function and your current altitude.
+    
+//removed some pressure stuff 
+        }
+        else Serial.println("error retrieving DO measurement\n");
+      }
+      else Serial.println("error starting DO measurement\n");
+    }
+    else Serial.println("error retrieving pH measurement\n");
+  }
+ else Serial.println("error starting pH measurement\n");
+ 
+  sensorvalue=analogRead(pHsensor);
+  // Add readings as fields to point
+  sensorReadings.addField("DO", T);
+  sensorReadings.addField("pH", P);
+ sensorReadings.addField("Ph sensor",  sensorvalue);
+ 
+ 
+  // Print what are we exactly writing
+  Serial.print("Writing: ");
+  Serial.println(client.pointToLineProtocol(sensorReadings));
+  
+  // Write point into buffer
+  client.writePoint(sensorReadings);
+ 
+  // Clear fields for next usage. Tags remain the same.
+  sensorReadings.clearFields();
+ 
+ 
+  // Wait 10s
+  Serial.println("Wait 10s");
+  delay(10000);
+}
